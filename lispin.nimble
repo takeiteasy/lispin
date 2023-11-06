@@ -5,9 +5,10 @@ author        = "George Watson"
 description   = "Lisp in Nim"
 license       = "MIT"
 srcDir        = "src"
-bin           = @["build/lispin"]
+bin           = @["lispin"]
 
 
 # Dependencies
 
 requires "nim >= 2.0.0"
+requires "regex >= 0.23.0"
