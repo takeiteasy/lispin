@@ -1,88 +1,107 @@
-import rdstdin, strutils, strformat, regex
+import rdstdin, strutils, strformat, regex, options, macros
 
 type
-    LexerTokenType = enum TokenSpecial, TokenSymbol, TokenNumber, TokenString
+    LexerTokenKind = enum TokenSpecial, TokenSymbol, TokenNumber, TokenString
     LexerToken = object
-        tokenType: LexerTokenType
+        kind: LexerTokenKind
         value: string
     Lexer = object
         code: string
+        tokens: seq[LexerToken]
         position: int
 let
     TerminateChars = Whitespace + NewLines + {'(', ')'}
 
-proc readSymbol(self: var Lexer): string =
-    let startPosition = self.position
-    while self.position < self.code.len:
-        if TerminateChars.contains(self.code[self.position]):
-            break
-        inc self.position
-    return self.code[startPosition .. (self.position - 1)]
+proc peekChar(lexer: Lexer): Option[char] =
+    if lexer.position < lexer.code.len:
+        return lexer.code[lexer.position].some
 
-proc readNumber(self: var Lexer): string =
-    let sym = self.readSymbol
+proc peekNextChar(lexer: Lexer): Option[char] =
+    if lexer.position + 1 < lexer.code.len:
+        return lexer.code[lexer.position + 1].some
+
+proc nextChar(lexer: var Lexer): Option[char] =
+    if lexer.position < lexer.code.len:
+        result = lexer.code[lexer.position].some
+        inc lexer.position
+
+proc readSpecial(lexer: var Lexer): string =
+    $lexer.nextChar.get
+
+proc readSymbol(lexer: var Lexer): string =
+    let startPosition = lexer.position
+    while true:
+        let c = lexer.peekChar
+        if c.isNone or TerminateChars.contains(c.get):
+            break
+        discard lexer.nextChar
+    return lexer.code[startPosition .. (lexer.position - 1)]
+
+proc readNumber(lexer: var Lexer): string =
+    let sym = lexer.readSymbol
     var m: RegexMatch2
+    # Regex taken from: https://stackoverflow.com/a/5917250
     if not match(sym, re2"^-?(\d+|\d{1,3}(,\d{3})*)(\.\d+)?$", m):
         raise newException(ValueError, fmt"ERROR: Invalid number `{sym}`")
     return sym 
 
-proc readString(self: var Lexer): string =
-    inc self.position
-    let startPosition = self.position
-    while self.position < self.code.len:
-        if self.code[self.position] == '"':
-            var prevChar = self.position - 1
-            while self.code[prevChar] == '\\':
+proc readString(lexer: var Lexer): string =
+    discard lexer.nextChar # Skip opening quote
+    let startPosition = lexer.position
+    while true:
+        let c = lexer.peekChar
+        if c.isNone:
+            raise newException(ValueError, "ERROR: Unterminated string")
+        if c.get == '"':
+            var prevChar = lexer.position - 1
+            while lexer.code[prevChar] == '\\':
                 dec prevChar
-            var escapeCount = self.position - 1 - prevChar
+            var escapeCount = lexer.position - 1 - prevChar
             if escapeCount mod 2 == 0:
-                return self.code[startPosition .. (self.position - 1)]
-        inc self.position
-    raise newException(ValueError, "ERROR: Unterminated string")
+                return lexer.code[startPosition .. (lexer.position - 1)]
+        discard lexer.nextChar
+    
+macro addToken(kind: static[string]): untyped =
+    parseStmt(fmt"lexer.tokens.add LexerToken(kind: Token{kind}, value: lexer.read{kind})")
 
-proc peek(self: Lexer): char =
-    return (if self.position + 1 >= self.code.len: '\0' else: self.code[self.position + 1])
-
-proc tokenize(self: var Lexer): seq[LexerToken] =
-    var tokens: seq[LexerToken]
-    while self.position < self.code.len:
-        let ch = self.code[self.position]
-        case ch
-        of Whitespace: # Skip whitespace
-            inc self.position
-        of ';': # Comments, skip until newline
-            while self.position < self.code.len:
-                if NewLines.contains(self.code[self.position]):
-                    break
-                inc self.position
-            inc self.position
-        of '(', ')': # Special single character tokens
-            tokens.add LexerToken(tokenType: TokenSpecial, value: $ch)
-            inc self.position
-        of '-':
-            let nextChar = self.peek
-            if Digits.contains(nextChar):
-                tokens.add LexerToken(tokenType: TokenNumber, value: self.readNumber)
-            else:
-                tokens.add LexerToken(tokenType: TokenSymbol, value: self.readSymbol)
-        of Digits: # Numbers -- TODO: Negative numbers + floats
-            tokens.add LexerToken(tokenType: TokenNumber, value: self.readNumber)
-        of '"': # Strings
-            tokens.add LexerToken(tokenType: TokenString, value: self.readString)
-            inc self.position
-        else: # Anything else is parsed as a symbol
-            tokens.add LexerToken(tokenType: TokenSymbol, value: self.readSymbol)
-    return tokens
-
-while true:
-    try:
-        var line: string
-        let ok = readLineFromStdin("user> ", line)
-        if not ok:
+proc parse(str: string): void =
+    var lexer = Lexer(code: str)
+    while true:
+        var c = lexer.peekChar
+        if c.isNone:
             break
-        if line.len > 0:
-            var lexer = Lexer(code: line)
-            echo lexer.tokenize
-    except:
-        echo getCurrentExceptionMsg()
-        
+        case c.get
+        of Whitespace:
+            discard lexer.nextChar
+        of ';':
+            while not c.isNone and not NewLines.contains(c.get):
+                c = lexer.nextChar
+        of '(', ')':
+            addToken("Special")
+        of Digits:
+            addToken("Number")
+        of '-':
+            c = lexer.peekNextChar
+            if c.isNone or not Digits.contains(c.get):
+                addToken("Symbol")
+            else:
+                addToken("Number")
+        of '"':
+            addToken("String")
+            discard lexer.nextChar # Skip closing quote
+        else:
+            addToken("Symbol")
+    echo lexer.tokens
+
+when isMainModule:
+    while true:
+        try:
+            var line: string
+            let ok = readLineFromStdin("user> ", line)
+            if not ok:
+                break
+            if line.len > 0:
+                line.parse
+        except:
+            echo getCurrentExceptionMsg()
+            
